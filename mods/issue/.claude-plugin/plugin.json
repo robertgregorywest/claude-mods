@@ -1,0 +1,6 @@
+{
+  "name": "issue",
+  "version": "0.1.0",
+  "description": "/issue N loads a GitHub issue into the prompt; /issue alone opens a pane of open issues",
+  "types": "./types/index.d.ts"
+}

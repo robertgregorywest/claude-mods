@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run the check loop on every mod touched by this commit.
+set -euo pipefail
+mods=$(git diff --cached --name-only --diff-filter=ACMR | sed -n 's#^mods/\([^/]*\)/.*#\1#p' | sort -u)
+[[ -z "$mods" ]] && exit 0
+for m in $mods; do [[ -d "mods/$m" ]] || continue; set -- "$@" "$m"; done
+(( $# )) && exec bin/mods check "$@"

@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Manage the Claude Code mods in this repo.
+#
+# Install = point CLAUDE_CODE_PLUGIN_DIRS (in ~/.claude/settings.json) straight at
+# mods/<name>. There is no copy step: interactive sessions watch those folders, so
+# saving a file here hot-reloads the mod in every running session.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODS="$ROOT/mods"
+SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+
+die() { echo "mods: $*" >&2; exit 1; }
+
+all_mods() {
+  for d in "$MODS"/*/; do
+    [[ -f "$d/.claude-plugin/plugin.json" ]] && basename "$d"
+  done
+}
+
+mod_dir() {
+  [[ -f "$MODS/$1/.claude-plugin/plugin.json" ]] || die "no mod named '$1' in $MODS"
+  echo "$MODS/$1"
+}
+
+current_dirs() {
+  jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // ""' "$SETTINGS" 2>/dev/null | tr ':' '\n' | sed '/^$/d'
+}
+
+# Rewrite CLAUDE_CODE_PLUGIN_DIRS: keep entries that aren't ours (other folders,
+# other repos), drop anything pointing at one of our mods by path or by name,
+# then append the given repo mod folders.
+write_dirs() {
+  local mods=("$@") keep=() d name m ours
+  while IFS= read -r d; do
+    ours=0
+    [[ "${d/#\~/$HOME}" == "$MODS/"* ]] && ours=1
+    name="$(basename "$d")"
+    for m in $(all_mods); do [[ "$name" == "$m" ]] && ours=1; done
+    (( ours )) || keep+=("$d")
+  done < <(current_dirs)
+  for m in ${mods[@]+"${mods[@]}"}; do keep+=("$MODS/$m"); done
+
+  local joined
+  joined="$(IFS=:; echo "${keep[*]-}")"
+  [[ -f "$SETTINGS" ]] || echo '{}' > "$SETTINGS"
+  cp "$SETTINGS" "$SETTINGS.mods-bak"
+  local tmp; tmp="$(mktemp)"
+  if [[ -n "$joined" ]]; then
+    jq --arg v "$joined" '.env.CLAUDE_CODE_PLUGIN_DIRS = $v | .env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1"' "$SETTINGS" > "$tmp"
+  else
+    jq 'del(.env.CLAUDE_CODE_PLUGIN_DIRS)' "$SETTINGS" > "$tmp"
+  fi
+  mv "$tmp" "$SETTINGS"
+  echo "CLAUDE_CODE_PLUGIN_DIRS=${joined:-<unset>}"
+}
+
+cmd_list() {
+  local m installed
+  installed="$(current_dirs | sed "s#^~#$HOME#")"
+  for m in $(all_mods); do
+    if grep -qxF "$MODS/$m" <<<"$installed"; then s=installed; else s=-; fi
+    printf '%-20s %-10s %s\n' "$m" "$s" "$(jq -r .description "$MODS/$m/.claude-plugin/plugin.json")"
+  done
+}
+
+cmd_install() {
+  local want=("$@") m
+  if (( ${#want[@]} == 0 )); then
+    want=($(all_mods))
+  else
+    # Adding to what's already installed from this repo.
+    for m in "${want[@]}"; do mod_dir "$m" >/dev/null; done
+    while IFS= read -r m; do want+=("$m"); done < <(current_dirs | sed "s#^~#$HOME#" | grep "^$MODS/" | xargs -n1 basename 2>/dev/null || true)
+    want=($(printf '%s\n' "${want[@]}" | sort -u))
+  fi
+  write_dirs "${want[@]}"
+  echo "Restart Claude Code sessions to pick up newly added mods; edits to installed ones hot-reload."
+}
+
+cmd_uninstall() {
+  local drop=("$@") keep=() m
+  (( ${#drop[@]} )) || drop=($(all_mods))
+  while IFS= read -r m; do
+    [[ " ${drop[*]} " == *" $m "* ]] || keep+=("$m")
+  done < <(current_dirs | sed "s#^~#$HOME#" | grep "^$MODS/" | xargs -n1 basename 2>/dev/null || true)
+  write_dirs ${keep[@]+"${keep[@]}"}
+}
+
+# The test loop: validate -> type-check -> tests, per mod. Exit non-zero on any failure.
+cmd_check() {
+  local mods=("$@") m dir failed=()
+  (( ${#mods[@]} )) || mods=($(all_mods))
+  for m in "${mods[@]}"; do
+    dir="$(mod_dir "$m")"
+    echo "== $m"
+    local ok=1
+    echo "-- validate"; claude plugin validate "$dir" || ok=0
+    echo "-- tsc"
+    if [[ -f "$dir/.claude-plugin/types/tsconfig.json" ]]; then
+      npx --yes -p typescript@5 tsc -p "$dir" || ok=0
+    else
+      echo "skipped: types not laid yet (the engine writes .claude-plugin/types/ the first time it loads the mod — install it and start a session)"
+    fi
+    echo "-- test"
+    if compgen -G "$dir/hooks/*.test.ts*" >/dev/null || compgen -G "$dir/tests/*.test.ts*" >/dev/null; then
+      claude plugin test "$dir" || ok=0
+    else
+      echo "no tests found"; ok=0
+    fi
+    (( ok )) || failed+=("$m")
+  done
+  if (( ${#failed[@]} )); then echo; echo "FAILED: ${failed[*]}"; exit 1; fi
+  echo; echo "all checks passed"
+}
+
+cmd_new() {
+  local name="${1:-}" desc="${2:-TODO: one line}"
+  [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || die "usage: mods new <kebab-name> [description]"
+  local dir="$MODS/$name"
+  [[ -e "$dir" ]] && die "$dir already exists"
+  mkdir -p "$dir/.claude-plugin" "$dir/hooks"
+  jq -n --arg n "$name" --arg d "$desc" '{name: $n, version: "0.1.0", description: $d}' > "$dir/.claude-plugin/plugin.json"
+  echo '{ "modules": ["./register.tsx"] }' > "$dir/hooks/hooks.json"
+  echo '{ "extends": "./.claude-plugin/types/tsconfig.json" }' > "$dir/tsconfig.json"
+  cat > "$dir/hooks/register.tsx" <<EOF
+import type { Register } from 'claude-code'
+
+export const register: Register = (on) => {
+  on('session.start', async (\$, e, next) => {
+    \$.ui.status('$name loaded')
+    return next(e)
+  })
+}
+EOF
+  cat > "$dir/hooks/register.test.ts" <<EOF
+import { expect, test } from 'claude-code/testing'
+
+test('$name loads', async () => {
+  expect(true).toBe(true)
+})
+EOF
+  echo "created $dir"
+  echo "next: write the mod, then 'bin/mods check $name' and 'bin/mods install $name'"
+}
+
+cmd_try() {
+  # One-off session with only this mod loaded from the repo, without installing it.
+  local dir; dir="$(mod_dir "${1:?usage: mods try <name> [claude args...]}")"; shift
+  exec claude --plugin-dir "$dir" "$@"
+}
+
+usage() {
+  cat <<EOF
+usage: bin/mods <command> [args]
+
+  list                     mods in this repo and whether they're installed
+  install [name...]        point CLAUDE_CODE_PLUGIN_DIRS at repo mods (all if none named)
+  uninstall [name...]      remove repo mods from CLAUDE_CODE_PLUGIN_DIRS (all if none named)
+  check [name...]          validate + type-check + run tests (all if none named)
+  new <name> [desc]        scaffold a new mod
+  try <name> [args...]     start claude with just this mod via --plugin-dir
+EOF
+}
+
+case "${1:-}" in
+  list) shift; cmd_list "$@" ;;
+  install) shift; cmd_install "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  check) shift; cmd_check "$@" ;;
+  new) shift; cmd_new "$@" ;;
+  try) shift; cmd_try "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac
