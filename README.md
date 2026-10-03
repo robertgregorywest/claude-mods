@@ -1,6 +1,43 @@
 # claude-mods
 
-Personal Claude Code mods (function-hook plugins). Each lives in `mods/<name>/`:
+Personal Claude Code mods (function-hook plugins).
+
+## Mods
+
+### issue
+
+Start work on a GitHub issue without leaving the prompt. Needs the `gh` CLI,
+logged in, and a session started inside the repo.
+
+- `/issue 33` fetches issue #33 and puts a prompt in the input box:
+  *Work on GitHub issue #33: <title>. Commit with "Closes #33" in the message.*
+  Press Enter to send it, or edit it first.
+- The issue's text goes to the model along with that prompt: title, state,
+  labels, body and comments, cut at 20k characters. The model doesn't need to
+  run `gh issue view` itself. This only happens when the prompt you send still
+  mentions `#33`.
+- `/issue` with no number opens a pane listing up to 50 open issues. Press 1–9
+  or select an issue to load it the same way. **Refresh** (`r`) reloads the
+  list, and **Close** closes the pane.
+
+### push-band
+
+A one-line bar above the prompt that appears when your current branch has
+commits that haven't been pushed to its upstream branch:
+
+```
+↑ 2 commits on main not pushed · abc1234 docs: tidy glossary  [ Push ] [ Later ]
+```
+
+- `p` (or **Push**) runs `git push`. On success you get a toast and the bar
+  goes away. On failure the last line of git's error appears under the bar.
+- `l` (or **Later**) hides the bar until you make another commit.
+- It checks when the session starts and after each turn finishes. The bar
+  stays hidden while Claude is working.
+
+## Layout
+
+Each mod lives in `mods/<name>/`:
 
 ```
 mods/<name>/
