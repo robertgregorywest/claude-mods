@@ -22,3 +22,11 @@ _Avoid_: unrelated entry, external entry
 **Dead entry**:
 A repo entry whose mod no longer exists in the repo (deleted or renamed). It stays in the installed set until it is uninstalled.
 _Avoid_: stale entry, orphan
+
+**Issue handoff**:
+The text of a GitHub issue that `/issue` sends to the model, unseen by the person, alongside the prompt it filled in, so the model doesn't fetch the issue itself.
+_Avoid_: issue context, attachment
+
+**Staged issue**:
+An issue `/issue` has fetched that is waiting for the person's next prompt; that prompt gets the issue handoff if it names the issue, and the staged issue is gone either way.
+_Avoid_: pending issue

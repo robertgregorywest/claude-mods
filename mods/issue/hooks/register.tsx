@@ -1,15 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PromptSubmitInput, Register } from 'claude-code'
 
-import type { IssueRow, Pending } from '../types'
+import type { IssueRow } from '../types'
 
-const PANE = 'issue-list'
-const BODY_LIMIT = 20_000
-
-const open = atom({ plugin: 'issue', key: 'open' } as const, null)
-const error = atom({ plugin: 'issue', key: 'error' } as const, null)
-// The issue whose text rides along with the next prompt that names it.
-const pending = atom({ plugin: 'issue', key: 'pending' } as const, null)
+// --- Issue handoff -----------------------------------------------------------
+// An issue /issue fetched is staged, and goes to the model as context with the
+// next prompt the person sends, if that prompt still names it. Only stage and
+// claim are used outside this section.
 
 type Issue = {
   number: number
@@ -20,11 +17,9 @@ type Issue = {
   comments: { author: { login: string }; body: string }[]
 }
 
-const gh = async ($: EngineInterface, ...args: string[]) => {
-  const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs: 20_000 })
+const BODY_LIMIT = 20_000
 
-  return { ok: exitCode === 0, out: stdout, err: stderr.trim().split('\n').at(-1) ?? '' }
-}
+const staged = atom({ plugin: 'issue', key: 'staged' } as const, null)
 
 // What the model reads with the prompt, so it needs no `gh issue view` of its own.
 const describe = (issue: Issue) => {
@@ -41,14 +36,50 @@ const describe = (issue: Issue) => {
   return text.length > BODY_LIMIT ? `${text.slice(0, BODY_LIMIT)}\n[cut at ${BODY_LIMIT} characters]` : text
 }
 
+// Only the person's own prompts claim the staged issue; a peer's, a schedule's
+// or a plugin's neither gets it nor uses it up.
+const isPersons = (origin: PromptSubmitInput['origin']) => origin.kind === 'composer' || origin.kind === 'bridge'
+
+// `#33` as a whole reference: not `#330`, `abc#33` or `other/repo#33`.
+const mentions = (text: string, number: number) => new RegExp(`(?<![\\w/])#${number}(?!\\d)`).test(text)
+
+// Stage an issue for the next prompt, replacing any staged before it.
+const stage = async ($: EngineInterface, issue: Issue) => {
+  await update($, staged, () => ({ number: issue.number, context: describe(issue) }))
+}
+
+// The context to send with this prompt, or null. The person's next prompt uses
+// the staged issue up whether or not it names it.
+const claim = async ($: EngineInterface, e: Pick<PromptSubmitInput, 'text' | 'origin'>) => {
+  if (!isPersons(e.origin)) return null
+
+  const issue = await read($, staged)
+  if (issue === null) return null
+
+  await update($, staged, () => null)
+  return mentions(e.text, issue.number) ? issue.context : null
+}
+
+// --- /issue command and pane --------------------------------------------------
+
+const PANE = 'issue-list'
+
+const open = atom({ plugin: 'issue', key: 'open' } as const, null)
+const error = atom({ plugin: 'issue', key: 'error' } as const, null)
+
+const gh = async ($: EngineInterface, ...args: string[]) => {
+  const { exitCode, stdout, stderr } = await $.process.run(['gh', ...args], { timeoutMs: 20_000 })
+
+  return { ok: exitCode === 0, out: stdout, err: stderr.trim().split('\n').at(-1) ?? '' }
+}
+
 const load = async ($: EngineInterface, number: number) => {
   const fields = 'number,title,body,state,labels,comments'
   const view = await gh($, 'issue', 'view', String(number), '--json', fields)
   if (!view.ok) return `gh issue view ${number} failed: ${view.err}`
 
   const issue = JSON.parse(view.out) as Issue
-  const loaded: Pending = { number, context: describe(issue) }
-  await update($, pending, () => loaded)
+  await stage($, issue)
   const closed = issue.state === 'OPEN' ? '' : ` (it is ${issue.state.toLowerCase()})`
   await $.prompt.fill({
     text: `Work on GitHub issue #${number}: ${issue.title}${closed}. Commit with "Closes #${number}" in the message.`,
@@ -99,11 +130,9 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    const issue = await read($, pending)
-    if (issue === null || !e.text.includes(`#${issue.number}`)) return next(e)
+    const context = await claim($, e)
 
-    await update($, pending, () => null)
-    return next({ ...e, context: [...(e.context ?? []), issue.context] })
+    return next(context === null ? e : { ...e, context: [...(e.context ?? []), context] })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

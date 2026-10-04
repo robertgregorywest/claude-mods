@@ -14,8 +14,10 @@ logged in, and a session started inside the repo.
   Press Enter to send it, or edit it first.
 - The issue's text goes to the model along with that prompt: title, state,
   labels, body and comments, cut at 20k characters. The model doesn't need to
-  run `gh issue view` itself. This only happens when the prompt you send still
-  mentions `#33`.
+  run `gh issue view` itself. This only happens when the next prompt you send
+  still mentions `#33` (not `#330` or `other/repo#33`); otherwise the issue
+  is dropped. Messages from peer sessions, schedules or other plugins don't
+  count as your next prompt.
 - `/issue` with no number opens a pane listing up to 50 open issues. Press 1–9
   or select an issue to load it the same way. **Refresh** (`r`) reloads the
   list, and **Close** closes the pane.

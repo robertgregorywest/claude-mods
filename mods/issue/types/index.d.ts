@@ -1,4 +1,4 @@
-export type Pending = { number: number; context: string }
+export type Staged = { number: number; context: string }
 
 export type IssueRow = { number: number; title: string; labels: string[] }
 
@@ -7,7 +7,7 @@ declare module 'claude-code' {
     issue: {
       open: IssueRow[] | null
       error: string | null
-      pending: Pending | null
+      staged: Staged | null
     }
   }
 }
