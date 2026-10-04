@@ -32,7 +32,8 @@ commits that haven't been pushed to its upstream branch:
 ```
 
 - `p` (or **Push**) runs `git push`. On success you get a toast and the bar
-  goes away. On failure the last line of git's error appears under the bar.
+  goes away. On failure the last line of git's error appears under the bar,
+  until you push again or make another commit.
 - `l` (or **Later**) hides the bar until you make another commit.
 - It checks when the session starts and after each turn finishes. The bar
   stays hidden while Claude is working.

@@ -1,12 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Ahead } from '../types'
-
-const ahead = atom({ plugin: 'push-band', key: 'ahead' } as const, null)
-const dismissedHead = atom({ plugin: 'push-band', key: 'dismissedHead' } as const, null)
-const isPushing = atom({ plugin: 'push-band', key: 'isPushing' } as const, false)
-const error = atom({ plugin: 'push-band', key: 'error' } as const, null)
+import type { Ahead, Band } from '../types'
 
 const git = async ($: EngineInterface, ...args: string[]) => {
   const { exitCode, stdout, stderr } = await $.process.run(['git', ...args], {
@@ -22,31 +17,94 @@ const findAhead = async ($: EngineInterface): Promise<Ahead | null> => {
   const count = await git($, 'rev-list', '--count', '@{u}..HEAD')
   if (!branch.ok || !count.ok || Number(count.out) === 0) return null
 
+  const upstream = await git($, 'rev-parse', '--abbrev-ref', '@{u}')
   const last = await git($, 'log', '-1', '--format=%h %s')
   const [head = '', ...subject] = last.out.split(' ')
 
-  return { branch: branch.out, count: Number(count.out), head, subject: subject.join(' ') }
+  return {
+    branch: branch.out,
+    upstream: upstream.ok ? upstream.out : 'upstream',
+    count: Number(count.out),
+    head,
+    subject: subject.join(' '),
+  }
 }
 
+// --- Band state --------------------------------------------------------------
+// One value says what the band shows. Its transitions:
+//
+//   clean     → ahead      a refresh finds unpushed commits
+//   ahead     → dismissed  Later; back to ahead when a refresh finds a new head
+//   ahead     → pushing    Push; then clean when it succeeds, failed when not
+//   failed    → pushing    Push again; ahead when a refresh finds a new head
+//   any       → clean      a refresh finds nothing to push (but not mid-push)
+//
+// Only transition is used outside this section. It stays in register.tsx
+// because the engine won't follow $ into an imported function.
+
+type BandEvent =
+  | { type: 'found'; ahead: Ahead | null }
+  | { type: 'later' }
+  | { type: 'push' }
+  | { type: 'pushed' }
+  | { type: 'rejected'; error: string }
+
+const band = atom({ plugin: 'push-band', key: 'band' } as const, { kind: 'clean' } as Band)
+
+const step = (state: Band, event: BandEvent): Band => {
+  switch (event.type) {
+    case 'found': {
+      // The push in flight settles the band itself.
+      if (state.kind === 'pushing') return state
+      if (event.ahead === null) return { kind: 'clean' }
+      // Later and a failure both hold until the head moves.
+      if ((state.kind === 'dismissed' || state.kind === 'failed') && state.ahead.head === event.ahead.head) {
+        return { ...state, ahead: event.ahead }
+      }
+      return { kind: 'ahead', ahead: event.ahead }
+    }
+    case 'later':
+      return state.kind === 'ahead' || state.kind === 'failed' ? { kind: 'dismissed', ahead: state.ahead } : state
+    case 'push':
+      return state.kind === 'ahead' || state.kind === 'failed' ? { kind: 'pushing', ahead: state.ahead } : state
+    case 'pushed':
+      return state.kind === 'pushing' ? { kind: 'clean' } : state
+    case 'rejected':
+      return state.kind === 'pushing' ? { kind: 'failed', ahead: state.ahead, error: event.error } : state
+  }
+}
+
+// Applies the event; resolves to whether the band moved.
+const transition = async ($: EngineInterface, event: BandEvent) => {
+  let moved = false
+  await update($, band, state => {
+    const after = step(state, event)
+    moved = after !== state
+    return after
+  })
+
+  return moved
+}
+
+// --- Refresh and push --------------------------------------------------------
+
+const commits = (count: number) => `${count} ${count === 1 ? 'commit' : 'commits'}`
+
 const refresh = async ($: EngineInterface) => {
-  const found = await findAhead($)
-  await update($, ahead, () => found)
+  await transition($, { type: 'found', ahead: await findAhead($) })
 }
 
 const push = async ($: EngineInterface, target: Ahead) => {
-  await update($, isPushing, () => true)
-  await update($, error, () => null)
+  if (!(await transition($, { type: 'push' }))) return
 
   const result = await git($, 'push')
-  await update($, isPushing, () => false)
-
   if (!result.ok) {
-    await update($, error, () => result.err.split('\n').at(-1) || 'git push failed')
+    await transition($, { type: 'rejected', error: result.err.split('\n').at(-1) || 'git push failed' })
     return
   }
 
-  const noun = target.count === 1 ? 'commit' : 'commits'
-  $.ui.toast(`Pushed ${target.count} ${noun} to origin/${target.branch}`)
+  await transition($, { type: 'pushed' })
+  $.ui.toast(`Pushed ${commits(target.count)} to ${target.upstream}`)
   await refresh($)
 }
 
@@ -66,41 +124,28 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const target = await read($, ahead)
-    const isQuiet =
-      e.props.hasSurvey ||
-      e.props.isWorking ||
-      target === null ||
-      (await read($, dismissedHead)) === target.head
-
-    if (isQuiet) {
+    const state = await read($, band)
+    if (e.props.hasSurvey || e.props.isWorking || state.kind === 'clean' || state.kind === 'dismissed') {
       return next(e)
     }
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const failure = await read($, error)
-    const noun = target.count === 1 ? 'commit' : 'commits'
+    const target = state.ahead
 
-    if (await read($, isPushing)) {
-      return <Text dimColor>Pushing {target.count} {noun} to origin/{target.branch}…</Text>
+    if (state.kind === 'pushing') {
+      return <Text dimColor>Pushing {commits(target.count)} to {target.upstream}…</Text>
     }
 
     return (
       <Box flexDirection="column">
         <Box>
           <Text>
-            ↑ {target.count} {noun} on {target.branch} not pushed · {target.head} {target.subject}{' '}
+            ↑ {commits(target.count)} on {target.branch} not pushed · {target.head} {target.subject}{' '}
           </Text>
           <Button key="push" label="Push" hotkey="p" variant="primary" onPress={() => push($, target)} />
-          <Button
-            key="later"
-            label="Later"
-            hotkey="l"
-            dimColor
-            onPress={() => update($, dismissedHead, () => target.head)}
-          />
+          <Button key="later" label="Later" hotkey="l" dimColor onPress={() => transition($, { type: 'later' })} />
         </Box>
-        {failure && <Text color="red">Push failed: {failure}</Text>}
+        {state.kind === 'failed' && <Text color="red">Push failed: {state.error}</Text>}
       </Box>
     )
   })

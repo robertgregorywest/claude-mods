@@ -16,9 +16,9 @@ const band = (isWorking = false) => ({
   },
 })
 
-// A fake repo two commits ahead of origin; `push` succeeds unless told to fail.
-const fakeGit = (on: On, { pushFails = false } = {}) => {
-  const repo = { ahead: 2, pushes: 0, toasts: [] as string[] }
+// A fake repo two commits ahead of its upstream; `push` succeeds unless told to fail.
+const fakeGit = (on: On, { pushFails = false, upstream = 'origin/main' } = {}) => {
+  const repo = { ahead: 2, head: 'abc1234', pushes: 0, toasts: [] as string[] }
   const ok = (stdout: string) => ({
     value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   })
@@ -26,8 +26,9 @@ const fakeGit = (on: On, { pushFails = false } = {}) => {
   on('process.run', async (_$, e) => {
     const args = e.argv.slice(1).join(' ')
     if (args === 'rev-parse --abbrev-ref HEAD') return ok('main\n')
+    if (args === 'rev-parse --abbrev-ref @{u}') return ok(`${upstream}\n`)
     if (args === 'rev-list --count @{u}..HEAD') return ok(`${repo.ahead}\n`)
-    if (args === 'log -1 --format=%h %s') return ok(`abc1234 docs: tidy glossary\n`)
+    if (args === 'log -1 --format=%h %s') return ok(`${repo.head} docs: tidy glossary\n`)
     if (args === 'push') {
       repo.pushes += 1
       if (pushFails) {
@@ -90,6 +91,30 @@ test('shows the last line of git push errors and keeps the button', async ($, on
   expect(await ui.find({ key: 'push' })).toBeDefined()
 })
 
+test('a new commit clears the last push failure', async ($, on) => {
+  const repo = fakeGit(on, { pushFails: true })
+  await start($)
+
+  const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+  await ui.press({ key: 'push' })
+  expect(await ui.find({ type: 'Text', text: /Push failed/ })).toBeDefined()
+
+  repo.ahead = 3
+  repo.head = 'def5678'
+  await start($)
+  expect((await ui.find({ type: 'Text', text: /not pushed/ }))?.text).toMatch(/3 commits on main not pushed · def5678/)
+  expect(await ui.find({ type: 'Text', text: /Push failed/ })).toBeUndefined()
+})
+
+test('names the upstream it pushes to, whatever the remote', async ($, on) => {
+  const repo = fakeGit(on, { upstream: 'fork/feature' })
+  await start($)
+
+  const ui = await $.ui.mount({ ...band(), surface: 'terminal' })
+  await ui.press({ key: 'push' })
+  expect(repo.toasts).toEqual(['Pushed 2 commits to fork/feature'])
+})
+
 test('Later hides the band until a new commit lands', async ($, on) => {
   const repo = fakeGit(on)
   await start($)
@@ -98,6 +123,14 @@ test('Later hides the band until a new commit lands', async ($, on) => {
   await ui.press({ key: 'later' })
   expect(await ui.find({ type: 'Text', text: /not pushed/ })).toBeUndefined()
   expect(repo.pushes).toBe(0)
+
+  await start($)
+  expect(await ui.find({ type: 'Text', text: /not pushed/ })).toBeUndefined()
+
+  repo.ahead = 3
+  repo.head = 'def5678'
+  await start($)
+  expect((await ui.find({ type: 'Text', text: /not pushed/ }))?.text).toMatch(/3 commits on main not pushed/)
 })
 
 test('stays out of the way while a turn is running', async ($, on) => {
