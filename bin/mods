@@ -7,84 +7,129 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODS="$ROOT/mods"
+MODS="${CLAUDE_MODS_DIR:-$ROOT/mods}"
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 
 die() { echo "mods: $*" >&2; exit 1; }
 
+is_mod() { [[ -f "$MODS/$1/.claude-plugin/plugin.json" ]]; }
+
+in_list() {
+  local x="$1" y; shift
+  for y in "$@"; do [[ "$x" == "$y" ]] && return 0; done
+  return 1
+}
+
 all_mods() {
   for d in "$MODS"/*/; do
-    [[ -f "$d/.claude-plugin/plugin.json" ]] && basename "$d"
+    is_mod "$(basename "$d")" && basename "$d"
   done
 }
 
 mod_dir() {
-  [[ -f "$MODS/$1/.claude-plugin/plugin.json" ]] || die "no mod named '$1' in $MODS"
+  is_mod "$1" || die "no mod named '$1' in $MODS"
   echo "$MODS/$1"
 }
 
-current_dirs() {
-  jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // ""' "$SETTINGS" 2>/dev/null | tr ':' '\n' | sed '/^$/d'
+# --- Installed set ------------------------------------------------------------
+# The installed set is the repo entries in CLAUDE_CODE_PLUGIN_DIRS. An entry is a
+# repo entry when, with ~ expanded and trailing slashes dropped, it is
+# $MODS/<name>. Anything else is a foreign entry and is kept verbatim. A repo
+# entry whose mod no longer exists is a dead entry: kept, and reported, until
+# uninstalled. Only installed_mods and set_installed touch the setting.
+
+settings_json() { if [[ -f "$SETTINGS" ]]; then cat "$SETTINGS"; else echo '{}'; fi; }
+
+plugin_dirs() {
+  settings_json | jq -r '.env.CLAUDE_CODE_PLUGIN_DIRS // ""' | tr ':' '\n' | sed '/^$/d'
 }
 
-# Rewrite CLAUDE_CODE_PLUGIN_DIRS: keep entries that aren't ours (other folders,
-# other repos), drop anything pointing at one of our mods by path or by name,
-# then append the given repo mod folders.
-write_dirs() {
-  local mods=("$@") keep=() d name m ours
-  while IFS= read -r d; do
-    ours=0
-    [[ "${d/#\~/$HOME}" == "$MODS/"* ]] && ours=1
-    name="$(basename "$d")"
-    for m in $(all_mods); do [[ "$name" == "$m" ]] && ours=1; done
-    (( ours )) || keep+=("$d")
-  done < <(current_dirs)
-  for m in ${mods[@]+"${mods[@]}"}; do keep+=("$MODS/$m"); done
+# Prints the mod name if the entry is a repo entry; fails otherwise.
+repo_name() {
+  local d="${1/#\~/$HOME}"
+  while [[ "$d" == */ ]]; do d="${d%/}"; done
+  [[ "$d" == "$MODS/"* ]] || return 1
+  d="${d#"$MODS/"}"
+  [[ -n "$d" && "$d" != */* ]] || return 1
+  echo "$d"
+}
 
-  local joined
+# Names of the installed set, dead entries included, sorted.
+installed_mods() {
+  local d
+  while IFS= read -r d; do repo_name "$d" || true; done < <(plugin_dirs) | sort -u
+}
+
+# Make the installed set exactly <names...>: foreign entries first, in their
+# original order, then repo entries sorted. Writes (and backs up) only on change.
+set_installed() {
+  local keep=() d m joined tmp
+  while IFS= read -r d; do
+    repo_name "$d" >/dev/null || keep+=("$d")
+  done < <(plugin_dirs)
+  while IFS= read -r m; do
+    [[ -n "$m" ]] || continue
+    is_mod "$m" || echo "mods: keeping dead entry $MODS/$m (no such mod; 'bin/mods uninstall $m' drops it)" >&2
+    keep+=("$MODS/$m")
+  done < <(printf '%s\n' "$@" | sort -u)
+
   joined="$(IFS=:; echo "${keep[*]-}")"
-  [[ -f "$SETTINGS" ]] || echo '{}' > "$SETTINGS"
-  cp "$SETTINGS" "$SETTINGS.mods-bak"
-  local tmp; tmp="$(mktemp)"
+  tmp="$(mktemp)"
   if [[ -n "$joined" ]]; then
-    jq --arg v "$joined" '.env.CLAUDE_CODE_PLUGIN_DIRS = $v | .env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1"' "$SETTINGS" > "$tmp"
+    settings_json | jq --arg v "$joined" '.env.CLAUDE_CODE_PLUGIN_DIRS = $v | .env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = "1"' > "$tmp"
   else
-    jq 'del(.env.CLAUDE_CODE_PLUGIN_DIRS)' "$SETTINGS" > "$tmp"
+    settings_json | jq 'del(.env.CLAUDE_CODE_PLUGIN_DIRS)' > "$tmp"
   fi
+  if [[ "$(jq -cS . "$tmp")" == "$(settings_json | jq -cS .)" ]]; then
+    rm -f "$tmp"
+    echo "CLAUDE_CODE_PLUGIN_DIRS unchanged"
+    return
+  fi
+  [[ -f "$SETTINGS" ]] && cp "$SETTINGS" "$SETTINGS.mods-bak"
   mv "$tmp" "$SETTINGS"
   echo "CLAUDE_CODE_PLUGIN_DIRS=${joined:-<unset>}"
 }
 
+# --- Commands -----------------------------------------------------------------
+
 cmd_list() {
-  local m installed
-  installed="$(current_dirs | sed "s#^~#$HOME#")"
-  for m in $(all_mods); do
-    if grep -qxF "$MODS/$m" <<<"$installed"; then s=installed; else s=-; fi
+  local m installed=()
+  while IFS= read -r m; do installed+=("$m"); done < <(installed_mods)
+  while IFS= read -r m; do
+    if ! is_mod "$m"; then
+      printf '%-20s %-10s %s\n' "$m" missing "(in settings, no such mod in this repo)"
+      continue
+    fi
+    if in_list "$m" ${installed[@]+"${installed[@]}"}; then s=installed; else s=-; fi
     printf '%-20s %-10s %s\n' "$m" "$s" "$(jq -r .description "$MODS/$m/.claude-plugin/plugin.json")"
-  done
+  done < <({ all_mods; printf '%s\n' ${installed[@]+"${installed[@]}"}; } | sed '/^$/d' | sort -u)
 }
 
 cmd_install() {
-  local want=("$@") m
-  if (( ${#want[@]} == 0 )); then
-    want=($(all_mods))
+  local want=() m
+  if (( $# == 0 )); then
+    while IFS= read -r m; do want+=("$m"); done < <(all_mods)
   else
-    # Adding to what's already installed from this repo.
-    for m in "${want[@]}"; do mod_dir "$m" >/dev/null; done
-    while IFS= read -r m; do want+=("$m"); done < <(current_dirs | sed "s#^~#$HOME#" | grep "^$MODS/" | xargs -n1 basename 2>/dev/null || true)
-    want=($(printf '%s\n' "${want[@]}" | sort -u))
+    for m in "$@"; do mod_dir "$m" >/dev/null; want+=("$m"); done
   fi
-  write_dirs "${want[@]}"
+  while IFS= read -r m; do want+=("$m"); done < <(installed_mods)
+  set_installed ${want[@]+"${want[@]}"}
   echo "Restart Claude Code sessions to pick up newly added mods; edits to installed ones hot-reload."
 }
 
 cmd_uninstall() {
-  local drop=("$@") keep=() m
-  (( ${#drop[@]} )) || drop=($(all_mods))
-  while IFS= read -r m; do
-    [[ " ${drop[*]} " == *" $m "* ]] || keep+=("$m")
-  done < <(current_dirs | sed "s#^~#$HOME#" | grep "^$MODS/" | xargs -n1 basename 2>/dev/null || true)
-  write_dirs ${keep[@]+"${keep[@]}"}
+  local installed=() keep=() m
+  while IFS= read -r m; do installed+=("$m"); done < <(installed_mods)
+  if (( $# )); then
+    for m in "$@"; do
+      is_mod "$m" || in_list "$m" ${installed[@]+"${installed[@]}"} \
+        || die "no mod named '$m' in $MODS or in CLAUDE_CODE_PLUGIN_DIRS"
+    done
+    for m in ${installed[@]+"${installed[@]}"}; do
+      in_list "$m" "$@" || keep+=("$m")
+    done
+  fi
+  set_installed ${keep[@]+"${keep[@]}"}
 }
 
 # The test loop: validate -> type-check -> tests, per mod. Exit non-zero on any failure.

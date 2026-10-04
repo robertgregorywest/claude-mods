@@ -66,6 +66,14 @@ entries, and backing the file up to `settings.json.mods-bak`). So:
   these folders and hot-reload a mod when its files are saved.
 - **Adding a new mod** to the list needs a session restart, since the env var is
   read at startup.
+- **Deleting or renaming a mod** leaves a dead entry in the setting. `bin/mods`
+  keeps it and warns about it, and `list` shows it as `missing`, until you run
+  `bin/mods uninstall <old-name>`.
+
+The words used here (installed set, repo entry, foreign entry, dead entry) are
+defined in [CONTEXT.md](CONTEXT.md). `tests/bin-mods.sh` tests this against a
+throwaway settings file. The pre-commit hook runs it when `bin/` or `tests/`
+changes.
 
 ## Test loop
 

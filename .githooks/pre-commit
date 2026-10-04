@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Run the check loop on every mod touched by this commit.
+# Run bin/mods' own tests if the tooling changed, then the check loop on every mod
+# touched by this commit.
 set -euo pipefail
-mods=$(git diff --cached --name-only --diff-filter=ACMR | sed -n 's#^mods/\([^/]*\)/.*#\1#p' | sort -u)
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if grep -qE '^(bin|tests)/' <<<"$staged"; then tests/bin-mods.sh; fi
+mods=$(sed -n 's#^mods/\([^/]*\)/.*#\1#p' <<<"$staged" | sort -u)
 [[ -z "$mods" ]] && exit 0
 for m in $mods; do [[ -d "mods/$m" ]] || continue; set -- "$@" "$m"; done
 (( $# )) && exec bin/mods check "$@"
