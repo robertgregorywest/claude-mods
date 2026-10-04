@@ -8,6 +8,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODS="${CLAUDE_MODS_DIR:-$ROOT/mods}"
+# The mod layout lives here, as a working mod named mod-template: `new` copies it,
+# and `check` checks it with the mods so it can't fall out of date.
+TEMPLATE="$ROOT/template"
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 
 die() { echo "mods: $*" >&2; exit 1; }
@@ -29,6 +32,11 @@ all_mods() {
 mod_dir() {
   is_mod "$1" || die "no mod named '$1' in $MODS"
   echo "$MODS/$1"
+}
+
+# Like mod_dir, but `template` names the template, for check and try.
+check_dir() {
+  if [[ "$1" == template ]]; then echo "$TEMPLATE"; else mod_dir "$1"; fi
 }
 
 # --- Installed set ------------------------------------------------------------
@@ -135,9 +143,9 @@ cmd_uninstall() {
 # The test loop: validate -> type-check -> tests, per mod. Exit non-zero on any failure.
 cmd_check() {
   local mods=("$@") m dir failed=()
-  (( ${#mods[@]} )) || mods=($(all_mods))
+  (( ${#mods[@]} )) || mods=($(all_mods) template)
   for m in "${mods[@]}"; do
-    dir="$(mod_dir "$m")"
+    dir="$(check_dir "$m")"
     echo "== $m"
     local ok=1
     echo "-- validate"; claude plugin validate "$dir" || ok=0
@@ -145,7 +153,7 @@ cmd_check() {
     if [[ -f "$dir/.claude-plugin/types/tsconfig.json" ]]; then
       npx --yes -p typescript@5 tsc -p "$dir" || ok=0
     else
-      echo "skipped: types not laid yet (the engine writes .claude-plugin/types/ the first time it loads the mod — install it and start a session)"
+      echo "skipped: types not laid yet (the engine writes .claude-plugin/types/ the first time it loads the mod — install it, or run 'bin/mods try' on it)"
     fi
     echo "-- test"
     if compgen -G "$dir/hooks/*.test.ts*" >/dev/null || compgen -G "$dir/tests/*.test.ts*" >/dev/null; then
@@ -162,36 +170,26 @@ cmd_check() {
 cmd_new() {
   local name="${1:-}" desc="${2:-TODO: one line}"
   [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || die "usage: mods new <kebab-name> [description]"
-  local dir="$MODS/$name"
+  [[ "$name" == template ]] && die "'template' is reserved for the template"
+  local dir="$MODS/$name" tmp f
   [[ -e "$dir" ]] && die "$dir already exists"
-  mkdir -p "$dir/.claude-plugin" "$dir/hooks"
-  jq -n --arg n "$name" --arg d "$desc" '{name: $n, version: "0.1.0", description: $d}' > "$dir/.claude-plugin/plugin.json"
-  echo '{ "modules": ["./register.tsx"] }' > "$dir/hooks/hooks.json"
-  echo '{ "extends": "./.claude-plugin/types/tsconfig.json" }' > "$dir/tsconfig.json"
-  cat > "$dir/hooks/register.tsx" <<EOF
-import type { Register } from 'claude-code'
-
-export const register: Register = (on) => {
-  on('session.start', async (\$, e, next) => {
-    \$.ui.status('$name loaded')
-    return next(e)
-  })
-}
-EOF
-  cat > "$dir/hooks/register.test.ts" <<EOF
-import { expect, test } from 'claude-code/testing'
-
-test('$name loads', async () => {
-  expect(true).toBe(true)
-})
-EOF
+  tmp="$(mktemp)"
+  mkdir -p "$MODS"
+  cp -R "$TEMPLATE" "$dir"
+  rm -rf "$dir/.claude-plugin/types"
+  while IFS= read -r f; do
+    sed "s/mod-template/$name/g" "$f" > "$tmp" && cat "$tmp" > "$f"
+  done < <(grep -rl mod-template "$dir")
+  jq --arg d "$desc" '.description = $d' "$dir/.claude-plugin/plugin.json" > "$tmp"
+  cat "$tmp" > "$dir/.claude-plugin/plugin.json"
+  rm -f "$tmp"
   echo "created $dir"
-  echo "next: write the mod, then 'bin/mods check $name' and 'bin/mods install $name'"
+  echo "next: write the mod and its tests, then 'bin/mods check $name' and 'bin/mods install $name'"
 }
 
 cmd_try() {
   # One-off session with only this mod loaded from the repo, without installing it.
-  local dir; dir="$(mod_dir "${1:?usage: mods try <name> [claude args...]}")"; shift
+  local dir; dir="$(check_dir "${1:?usage: mods try <name> [claude args...]}")"; shift
   exec claude --plugin-dir "$dir" "$@"
 }
 
@@ -202,8 +200,8 @@ usage: bin/mods <command> [args]
   list                     mods in this repo and whether they're installed
   install [name...]        point CLAUDE_CODE_PLUGIN_DIRS at repo mods (all if none named)
   uninstall [name...]      remove repo mods from CLAUDE_CODE_PLUGIN_DIRS (all if none named)
-  check [name...]          validate + type-check + run tests (all if none named)
-  new <name> [desc]        scaffold a new mod
+  check [name...]          validate + type-check + run tests (all mods and the template if none named)
+  new <name> [desc]        scaffold a new mod by copying template/
   try <name> [args...]     start claude with just this mod via --plugin-dir
 EOF
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for bin/mods' installed set, against a throwaway settings file and mods
+# Tests for bin/mods' installed set and scaffolding, against a throwaway settings file and mods
 # folder (CLAUDE_SETTINGS / CLAUDE_MODS_DIR). Your real settings are not touched.
 set -uo pipefail
 
@@ -113,6 +113,26 @@ test_dead_entry_is_kept_reported_and_uninstallable() {
   ok "list shows it missing" grep -qE '^gone +missing' <<<"$(mods list)"
   mods uninstall gone >/dev/null 2>&1
   check "uninstall gone" "$(dirs)" "$M/issue:$M/push"
+}
+
+test_new_copies_the_template_under_the_new_name() {
+  local root laid made=0; root="$(dirname "$(dirname "$BIN")")"
+  laid="$root/template/.claude-plugin/types"
+  # Stand in for the types the engine lays when it loads the template.
+  [[ -e "$laid" ]] || { mkdir "$laid"; made=1; }
+  mods new my-mod "does a thing" >/dev/null
+  (( made )) && rmdir "$laid"
+  check "same files as the template" \
+    "$(cd "$M/my-mod" && find . -type f -not -path './.claude-plugin/types/*' | sort)" \
+    "$(cd "$root/template" && find . -type f -not -path './.claude-plugin/types/*' | sort)"
+  check "no laid types copied" "$([[ -e "$M/my-mod/.claude-plugin/types" ]] && echo yes || echo no)" no
+  check "name" "$(jq -r .name "$M/my-mod/.claude-plugin/plugin.json")" my-mod
+  check "description" "$(jq -r .description "$M/my-mod/.claude-plugin/plugin.json")" "does a thing"
+  check "template name left anywhere" "$(grep -rl mod-template "$M/my-mod")" ""
+  ok "module renamed" grep -q "'my-mod loaded'" "$M/my-mod/hooks/register.tsx"
+  ok "listed as a mod" grep -qE '^my-mod ' <<<"$(mods list)"
+  check "existing mod refused" "$(mods new my-mod >/dev/null 2>&1; echo $?)" 1
+  check "'template' refused" "$(mods new template >/dev/null 2>&1; echo $?)" 1
 }
 
 for current in $(declare -F | awk '{print $3}' | grep '^test_'); do

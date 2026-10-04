@@ -33,17 +33,13 @@ logged in, and a session started inside the repo.
 
 ## Layout
 
-Each mod lives in `mods/<name>/`:
+Each mod lives in `mods/<name>/`, laid out like [`template/`](template/): a
+working mod named `mod-template` that `bin/mods new` copies and renames, and
+that `bin/mods check` checks along with the mods, so it can't fall out of date.
+Change the layout there, not here.
 
-```
-mods/<name>/
-  .claude-plugin/plugin.json   manifest (+ "types" if the mod uses $.state)
-  hooks/hooks.json             { "modules": ["./register.tsx"] }
-  hooks/register.tsx           the hooks module
-  hooks/*.test.ts(x)           tests, run by `claude plugin test`
-  types/index.d.ts             $.state contract (optional)
-  tsconfig.json                extends the engine-laid .claude-plugin/types/tsconfig.json
-```
+A mod that keeps `$.state` adds its contract as `types/index.d.ts` and points
+`"types"` in `.claude-plugin/plugin.json` at it, as `mods/issue` does.
 
 ## Install
 
@@ -73,7 +69,9 @@ changes.
 
 ## Test loop
 
-1. `bin/mods new <name> "description"` to scaffold.
+1. `bin/mods new <name> "description"` to scaffold from `template/`. Its one
+   test checks the template's placeholder behaviour, so it fails once you
+   replace that behaviour.
 2. Write the module and its tests. Ask Claude to load the `plugin-authoring` skill
    first: it has the API types and examples.
 3. `bin/mods check <name>` runs `claude plugin validate`, `tsc` and
@@ -86,7 +84,7 @@ changes.
      failures show as a dim line in the transcript (`claude --debug` gives more).
 5. Commit. The pre-commit hook (`.githooks/`, enabled with
    `git config core.hooksPath .githooks`) runs `bin/mods check` on every mod the
-   commit touches.
+   commit touches, and on the template when it changes.
 
 Because installed mods load straight from the working tree, a half-finished edit
 reaches your real sessions as soon as you save it. For risky changes, use a

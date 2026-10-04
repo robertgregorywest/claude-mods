@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Run bin/mods' own tests if the tooling changed, then the check loop on every mod
-# touched by this commit.
+# Run bin/mods' own tests if the tooling or the template changed, then the check
+# loop on every mod (or the template) touched by this commit.
 set -euo pipefail
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
-if grep -qE '^(bin|tests)/' <<<"$staged"; then tests/bin-mods.sh; fi
+if grep -qE '^(bin|tests|template)/' <<<"$staged"; then tests/bin-mods.sh; fi
 mods=$(sed -n 's#^mods/\([^/]*\)/.*#\1#p' <<<"$staged" | sort -u)
-[[ -z "$mods" ]] && exit 0
 for m in $mods; do [[ -d "mods/$m" ]] || continue; set -- "$@" "$m"; done
-(( $# )) && exec bin/mods check "$@"
+grep -q '^template/' <<<"$staged" && set -- "$@" template
+(( $# )) || exit 0
+exec bin/mods check "$@"
