@@ -22,21 +22,14 @@ logged in, and a session started inside the repo.
   or select an issue to load it the same way. **Refresh** (`r`) reloads the
   list, and **Close** closes the pane.
 
-### push-band
+### push
 
-A one-line bar above the prompt that appears when your current branch has
-commits that haven't been pushed to its upstream branch:
+`/push` pushes the current branch to its upstream, the same as `git push`.
 
-```
-↑ 2 commits on main not pushed · abc1234 docs: tidy glossary  [ Push ] [ Later ]
-```
-
-- `p` (or **Push**) runs `git push`. On success you get a toast and the bar
-  goes away. On failure the last line of git's error appears under the bar,
-  until you push again or make another commit.
-- `l` (or **Later**) hides the bar until you make another commit.
-- It checks when the session starts and after each turn finishes. The bar
-  stays hidden while Claude is working.
+- On success you get a toast, e.g. *Pushed 2 commits to origin/main*, named
+  after the branch's real upstream.
+- Otherwise it says why in the command's output: git's last error line,
+  nothing to push, or no upstream branch.
 
 ## Layout
 
@@ -57,7 +50,7 @@ mods/<name>/
 ```sh
 bin/mods install            # all mods
 bin/mods install issue      # just one (added to what's already installed)
-bin/mods uninstall push-band
+bin/mods uninstall push
 bin/mods list
 ```
 

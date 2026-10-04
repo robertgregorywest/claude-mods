@@ -1,6 +1,0 @@
-{
-  "name": "push-band",
-  "version": "0.1.0",
-  "description": "Band above the prompt offering a one-press git push when the branch is ahead of its upstream",
-  "types": "./types/index.d.ts"
-}

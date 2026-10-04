@@ -10,7 +10,7 @@ setup() {
   T="$(mktemp -d)"
   M="$T/mods"
   S="$T/settings.json"
-  for m in issue push-band; do
+  for m in issue push; do
     mkdir -p "$M/$m/.claude-plugin"
     echo "{\"name\":\"$m\",\"description\":\"the $m mod\"}" > "$M/$m/.claude-plugin/plugin.json"
   done
@@ -37,15 +37,15 @@ ok() { # ok <description> <command...>: command must succeed
 
 test_install_into_missing_settings() {
   mods install >/dev/null
-  check "dirs" "$(dirs)" "$M/issue:$M/push-band"
+  check "dirs" "$(dirs)" "$M/issue:$M/push"
   check "function hooks" "$(jq -r .env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS "$S")" 1
   check "no backup of a file that didn't exist" "$([[ -e "$S.mods-bak" ]] && echo yes || echo no)" no
 }
 
 test_install_keeps_foreign_entries_first_in_order() {
-  settings "$M/push-band:/opt/b:/opt/a"
+  settings "$M/push:/opt/b:/opt/a"
   mods install issue >/dev/null
-  check "dirs" "$(dirs)" "/opt/b:/opt/a:$M/issue:$M/push-band"
+  check "dirs" "$(dirs)" "/opt/b:/opt/a:$M/issue:$M/push"
   check "other settings kept" "$(jq -r .theme "$S")" dark
 }
 
@@ -60,25 +60,25 @@ test_repeat_install_is_a_no_op() {
 }
 
 test_foreign_entry_with_a_mod_name_survives() {
-  settings "/elsewhere/issue:$M/push-band"
+  settings "/elsewhere/issue:$M/push"
   mods install issue >/dev/null
-  check "after install" "$(dirs)" "/elsewhere/issue:$M/issue:$M/push-band"
+  check "after install" "$(dirs)" "/elsewhere/issue:$M/issue:$M/push"
   mods uninstall >/dev/null
   check "after uninstall all" "$(dirs)" "/elsewhere/issue"
 }
 
 test_tilde_and_trailing_slash_count_as_installed() {
-  settings "~/mods/issue:$M/push-band/"
+  settings "~/mods/issue:$M/push/"
   local list; list="$(mods list)"
   ok "issue listed as installed" grep -qE '^issue +installed' <<<"$list"
-  ok "push-band listed as installed" grep -qE '^push-band +installed' <<<"$list"
+  ok "push listed as installed" grep -qE '^push +installed' <<<"$list"
   mods uninstall issue >/dev/null
-  check "dirs" "$(dirs)" "$M/push-band"
+  check "dirs" "$(dirs)" "$M/push"
 }
 
 test_uninstall_one_keeps_the_others() {
-  settings "/opt/a:$M/issue:$M/push-band"
-  mods uninstall push-band >/dev/null
+  settings "/opt/a:$M/issue:$M/push"
+  mods uninstall push >/dev/null
   check "dirs" "$(dirs)" "/opt/a:$M/issue"
 }
 
@@ -87,7 +87,7 @@ test_uninstall_all_removes_repo_and_dead_entries() {
   mods uninstall >/dev/null
   check "foreign kept" "$(dirs)" "/opt/a"
 
-  settings "$M/issue:$M/push-band"
+  settings "$M/issue:$M/push"
   mods install >/dev/null
   mods uninstall >/dev/null
   check "key removed when empty" "$(dirs)" "<unset>"
@@ -101,18 +101,18 @@ test_unknown_names_fail_without_writing() {
   check "install typo fails" "$(mods install typo >/dev/null 2>&1; echo $?)" 1
   ok "settings untouched" cmp "$S" "$T/original"
   check "no backup written" "$([[ -e "$S.mods-bak" ]] && echo yes || echo no)" no
-  check "uninstalling a real but uninstalled mod is fine" "$(mods uninstall push-band >/dev/null 2>&1; echo $?)" 0
+  check "uninstalling a real but uninstalled mod is fine" "$(mods uninstall push >/dev/null 2>&1; echo $?)" 0
 }
 
 test_dead_entry_is_kept_reported_and_uninstallable() {
   settings "$M/issue:$M/gone"
-  local err; err="$(mods install push-band 2>&1 >/dev/null)"
+  local err; err="$(mods install push 2>&1 >/dev/null)"
   check "install exit status" "$?" 0
-  check "dead entry kept, sorted with the rest" "$(dirs)" "$M/gone:$M/issue:$M/push-band"
+  check "dead entry kept, sorted with the rest" "$(dirs)" "$M/gone:$M/issue:$M/push"
   ok "install warns about it" grep -q "dead entry $M/gone" <<<"$err"
   ok "list shows it missing" grep -qE '^gone +missing' <<<"$(mods list)"
   mods uninstall gone >/dev/null 2>&1
-  check "uninstall gone" "$(dirs)" "$M/issue:$M/push-band"
+  check "uninstall gone" "$(dirs)" "$M/issue:$M/push"
 }
 
 for current in $(declare -F | awk '{print $3}' | grep '^test_'); do
